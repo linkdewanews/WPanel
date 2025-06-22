@@ -148,9 +148,9 @@ Berikut adalah langkah-langkah untuk menjalankan proyek ini dari repositori GitH
     *(Tekan `Ctrl + C` untuk menghentikan proses `npm run dev` setelah selesai atau biarkan berjalan).*
 
 10.  **import database**
-     ```bash
-    pada file panel.sql import ke phpmyadmin
-    ```
+   
+    Import file panel.sql ke dalam phpmyadmin
+   
 
 ## Menjalankan Server Development
 
