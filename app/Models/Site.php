@@ -33,6 +33,6 @@ class Site extends Model
      * field 'pass' setiap kali data disimpan.
      */
     protected $casts = [
-        'pass' => 'hashed',
-    ];
+    // 'pass' => 'hashed', 
+];
 }

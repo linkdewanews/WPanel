@@ -3,130 +3,136 @@
 namespace App\Services;
 
 use App\Models\Site;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class WordPressPublisher
 {
     /**
+     * Fungsi helper privat untuk menjalankan cURL request.
+     */
+    private function executeCurl(string $url, string $username, string $password, ?string $postData = null, bool $isPost = true)
+    {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_USERPWD, $username . ':' . $password);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+
+        if ($isPost) {
+            curl_setopt($ch, CURLOPT_POST, 1);
+            if ($postData) {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+            }
+        }
+        
+        $responseBody = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $errorMsg = curl_error($ch);
+        curl_close($ch);
+
+        if ($errorMsg) {
+            Log::error('Gagal posting (Error cURL)', ['site_url' => $url, 'error' => $errorMsg]);
+            return null;
+        }
+
+        return ['status' => $httpCode, 'body' => $responseBody];
+    }
+
+    /**
      * Mempublikasikan sebuah artikel ke situs WordPress.
-     * @param Site $site
-     * @param array $payload
-     * @return array|null Mengembalikan data post jika sukses, null jika gagal.
+     * @return array|null
      */
     public function publish(Site $site, array $payload)
     {
-        $response = Http::withoutVerifying()
-            ->withBasicAuth($site->user, $site->pass)
-            ->timeout(30)
-            ->post(rtrim($site->url, '/') . '/wp-json/wp/v2/posts', $payload);
+        // ===================================================================
+        // === LANGKAH DEBUGGING FINAL: CATAT KREDENSIAL YANG DIGUNAKAN ===
+        // ===================================================================
+        Log::info('MEMULAI PROSES POSTING DARI PUBLISHER', [
+            'site_id' => $site->id,
+            'site_name' => $site->name,
+            'target_url' => rtrim($site->url, '/') . '/wp-json/wp/v2/posts',
+            'username_used' => $site->user,
+            // Hanya log beberapa karakter password demi keamanan
+            'password_used_preview' => substr($site->pass, 0, 5) . '...(dan seterusnya)' 
+        ]);
+        // ===================================================================
 
-        // Guard Clause: Cek kondisi gagal terlebih dahulu. Jika gagal, langsung keluar.
-        if (!$response->successful() || $response->status() != 201) {
-            Log::error('Gagal posting ke ' . $site->name, [
-                'status' => $response->status(),
-                'body' => $response->body(),
-                'payload' => $payload,
-            ]);
-            return null;
+        $url = rtrim($site->url, '/') . '/wp-json/wp/v2/posts';
+        $jsonData = json_encode($payload);
+        
+        $result = $this->executeCurl($url, $site->user, $site->pass, $jsonData);
+
+        if ($result && $result['status'] == 201) {
+            Log::info('Berhasil posting ke ' . $site->name, ['payload' => $payload]);
+            return json_decode($result['body'], true);
         }
-
-        // Jika lolos dari pengecekan di atas, berarti sudah pasti berhasil.
-        Log::info('Berhasil posting ke ' . $site->name, ['payload' => $payload]);
-        return $response->json();
+        
+        Log::error('Gagal posting (Respons Error dari WP)', ['site' => $site->name, 'status' => $result['status'] ?? 'N/A', 'body' => $result['body'] ?? '']);
+        return null;
     }
 
-    /**
-     * Mengambil data satu postingan dari WordPress.
-     * @param Site $site
-     * @param int $wpPostId
-     * @return array|null Mengembalikan data post jika sukses, null jika gagal.
-     */
     public function getPost(Site $site, int $wpPostId)
     {
-        $response = Http::withoutVerifying()
-            ->withBasicAuth($site->user, $site->pass)
-            ->timeout(30)
-            ->get(rtrim($site->url, '/') . "/wp-json/wp/v2/posts/{$wpPostId}");
+        $url = rtrim($site->url, '/') . "/wp-json/wp/v2/posts/{$wpPostId}";
+        $result = $this->executeCurl($url, $site->user, $site->pass, null, false); // isPost = false
 
-        // Guard Clause: Jika gagal, langsung return null.
-        if (!$response->successful()) {
-            Log::error('Gagal mengambil post dari ' . $site->name, ['wp_post_id' => $wpPostId]);
-            return null;
+        if ($result && $result['status'] == 200) {
+            return json_decode($result['body'], true);
         }
-
-        // Jika berhasil, return datanya.
-        return $response->json();
+        return null;
     }
 
-    /**
-     * Mengupdate postingan yang sudah ada di WordPress.
-     * @param Site $site
-     * @param int $wpPostId
-     * @param array $postData
-     * @return array|null Mengembalikan data post jika sukses, null jika gagal.
-     */
     public function updatePost(Site $site, int $wpPostId, array $postData)
     {
-        $response = Http::withoutVerifying()
-            ->withBasicAuth($site->user, $site->pass)
-            ->timeout(30)
-            ->post(rtrim($site->url, '/') . "/wp-json/wp/v2/posts/{$wpPostId}", [
-                'title'   => $postData['title'],
-                'content' => $postData['content'],
-                'categories' => $postData['categories'] ?? [], // Tambahkan categories jika ada
-            ]);
-        
-        // Guard Clause: Jika gagal, langsung return null.
-        if (!$response->successful()) {
-            Log::error('Gagal mengupdate post di ' . $site->name, ['wp_post_id' => $wpPostId]);
-            return null;
+        $url = rtrim($site->url, '/') . "/wp-json/wp/v2/posts/{$wpPostId}";
+        $jsonData = json_encode([
+            'title'   => $postData['title'],
+            'content' => $postData['content'],
+            'categories' => $postData['categories'] ?? [],
+        ]);
+
+        $result = $this->executeCurl($url, $site->user, $site->pass, $jsonData);
+
+        if ($result && $result['status'] == 200) {
+            return json_decode($result['body'], true);
         }
-        
-        // Jika berhasil, return datanya.
-        return $response->json();
+        return null;
     }
 
-    /**
-     * Mengupload file media ke WordPress dan mengembalikan ID-nya.
-     * @param Site $site
-     * @param string $filePath
-     * @param string $fileName
-     * @return int|null ID media jika berhasil, null jika gagal.
-     */
+    // Untuk upload media, kita perlu cURL yang sedikit berbeda
     public function uploadMedia(Site $site, string $filePath, string $fileName)
     {
-        $response = Http::withoutVerifying()
-            ->withBasicAuth($site->user, $site->pass)
-            ->timeout(60) // Timeout lebih lama untuk upload file
-            ->attach('file', file_get_contents($filePath), $fileName)
-            ->post(rtrim($site->url, '/') . '/wp-json/wp/v2/media');
+        $url = rtrim($site->url, '/') . '/wp-json/wp/v2/media';
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, file_get_contents($filePath));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Disposition: attachment; filename="' . $fileName . '"']);
+        curl_setopt($ch, CURLOPT_USERPWD, $site->user . ':' . $site->pass);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        $result = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
 
-        if ($response->successful()) {
-            Log::info('Berhasil upload media ke ' . $site->name, ['file' => $fileName]);
-            return $response->json('id');
-        } else {
-            Log::error('Gagal upload media ke ' . $site->name, ['status' => $response->status(), 'body' => $response->body()]);
-            return null;
+        if ($httpCode == 201) {
+            return json_decode($result, true)['id'] ?? null;
         }
+        return null;
     }
-
-    /**
-     * Mengambil daftar kategori dari situs WordPress.
-     * @param Site $site
-     * @return array Mengembalikan array kategori atau array kosong jika gagal.
-     */
+    
     public function getCategories(Site $site)
     {
-        $response = Http::withoutVerifying()
-            ->withBasicAuth($site->user, $site->pass)
-            ->timeout(20)
-            ->get(rtrim($site->url, '/') . '/wp-json/wp/v2/categories', ['per_page' => 100]);
-        
-        if (!$response->successful()) {
-            return [];
+        $url = rtrim($site->url, '/') . '/wp-json/wp/v2/categories?per_page=100';
+        $result = $this->executeCurl($url, $site->user, $site->pass, null, false); // isPost = false
+
+        if ($result && $result['status'] == 200) {
+            return collect(json_decode($result['body'], true))->pluck('name', 'id')->all();
         }
-        
-        return collect($response->json())->pluck('name', 'id')->all();
+        return [];
     }
 }
